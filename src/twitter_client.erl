@@ -887,14 +887,14 @@ request_url(get, Url, Login, Pass, _) ->
     end;
     
 request_url(post, Url, Login, Pass, Args) ->
-    Body = lists:concat(
+    PostBody = lists:concat(
         lists:foldl(
             fun (Rec, []) -> [Rec]; (Rec, Ac) -> [Rec, "&" | Ac] end,
             [],
             [K ++ "=" ++ twitter_client_utils:url_encode(V) || {K, V} <- Args]
         )
     ),
-    HTTPResult = http:request(post, {Url, headers(Login, Pass), "application/x-www-form-urlencoded", Body} , [], []),
+    HTTPResult = http:request(post, {Url, headers(Login, Pass), "application/x-www-form-urlencoded", PostBody} , [], []),
     case HTTPResult of
         {ok, {_Status, _Headers, Body}} -> Body;
         _ -> {error}
