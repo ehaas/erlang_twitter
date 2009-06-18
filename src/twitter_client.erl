@@ -76,6 +76,7 @@ favorites_destroy/4, favorites_destroy/5, favorites_favorites/4, favorites_favor
 friendship_create/4, friendship_create/5, friendship_destroy/4, friendship_destroy/5,
 friendship_exists/4, friendship_exists/5, headers/2, help_test/4, info/0,
 notification_follow/4, notification_follow/5, notification_leave/4, notification_leave/5,
+parse_direct_message/1, parse_direct_messages/1,
 parse_status/1, parse_statuses/1, parse_user/1, parse_users/1, request_url/5, 
 session_from_client/2, set/2, start/0, social_graph_friend_ids/4, social_graph_friend_ids/6,
 social_graph_follower_ids/4, social_graph_follower_ids/6, status_destroy/4, status_destroy/5, 
@@ -456,11 +457,11 @@ account_rate_limit_status(RootUrl, Consumer, Token, Secret, Args) ->
 direct_messages(RootUrl, Login, Password, Args) ->
     Url = build_url(RootUrl ++ "direct_messages.xml", Args),
     Body = request_url(get, Url, Login, Password, nil),
-    parse_statuses(Body).
+    parse_direct_messages(Body).
 direct_messages(RootUrl, Consumer, Token, Secret, Args) ->
     Url = RootUrl ++ "direct_messages.xml",
     Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_statuses(Body).
+    parse_direct_messages(Body).
 
 collect_direct_messages(RootUrl, Login, Password, Page, LowID, Acc) ->
     Args = [{"page", integer_to_list(Page)}, {"since_id", integer_to_list(LowID)}],
@@ -492,20 +493,20 @@ collect_direct_messages(RootUrl, Consumer, Token, Secret, Page, LowID, Acc) ->
 direct_new(RootUrl, Login, Password, Args) ->
     Url = RootUrl ++ "direct_messages/new.xml",
     Body = request_url(post, Url, Login, Password, Args),
-    parse_status(Body).
+    parse_direct_message(Body).
 direct_new(RootUrl, Consumer, Token, Secret, Args) ->
     Url = RootUrl ++ "direct_messages/new.xml",
     Body = oauth_request_url(post, Url, Consumer, Token, Secret, Args),
-    parse_statuses(Body).
+    parse_direct_message(Body).
 
 direct_sent(RootUrl, Login, Password, Args) ->
     Url = build_url(RootUrl ++ "direct_messages/sent.xml", Args),
     Body = request_url(get, Url, Login, Password, nil),
-    parse_statuses(Body).
+    parse_direct_messages(Body).
 direct_sent(RootUrl, Consumer, Token, Secret, Args) ->
     Url = RootUrl ++ "direct_messages/sent.xml",
     Body = oauth_request_url(get, Url, Consumer, Token, Secret, Args),
-    parse_statuses(Body).
+    parse_direct_messages(Body).
 
 direct_destroy(RootUrl, Login, Password, Args) ->
     UrlBase = RootUrl ++ "direct_messages/destroy/",
@@ -513,7 +514,7 @@ direct_destroy(RootUrl, Login, Password, Args) ->
         [{"id", Id}] ->
             Url = build_url(UrlBase ++ Id ++ ".xml", []),
             Body = request_url(get, Url, Login, Password, nil),
-            parse_status(Body);
+            parse_direct_message(Body);
         _ -> {error}
     end.
 direct_destroy(RootUrl, Consumer, Token, Secret, Args) ->
@@ -522,7 +523,7 @@ direct_destroy(RootUrl, Consumer, Token, Secret, Args) ->
         [{"id", Id}] ->
             Url = UrlBase ++ Id ++ ".xml",
             Body = oauth_request_url(get, Url, Consumer, Token, Secret, []),
-            parse_status(Body);
+            parse_direct_message(Body);
         _ -> {error}
     end.
 
@@ -929,13 +930,23 @@ headers(User, Pass) ->
 %% % Response parsing functions
 
 %% @private
+parse_direct_messages(Body) ->
+    case (catch xmerl_scan:string(Body, [{quiet, true}])) of
+        {'EXIT', _} -> {error};
+        {error, _} -> {error};
+        Result ->
+            {Xml, _Rest} = Result,
+            [parse_direct_message(Node) || Node <- xmerl_xpath:string("/direct-messages/direct_message", Xml)]
+    end.
+    
+%% @private
 parse_statuses(Body) ->
     case (catch xmerl_scan:string(Body, [{quiet, true}])) of
         {'EXIT', _} -> {error};
         {error, _} -> {error};
         Result ->
             {Xml, _Rest} = Result,
-            [parse_status(Node) || Node <- lists:flatten([xmerl_xpath:string("/statuses/status", Xml), xmerl_xpath:string("/direct-messages/direct_message", Xml)])]
+            [parse_status(Node) || Node <- xmerl_xpath:string("/statuses/status", Xml)]
     end.
 
 %% @private
@@ -947,20 +958,53 @@ parse_ids(Body) ->
             {Xml, _Rest} = Result,
             [parse_id(Node) || Node <- xmerl_xpath:string("/ids/id", Xml)]
     end.
+
+%% @private
+
+parse_direct_message(Node) when is_tuple(Node) ->
+    DirectMessage = #direct_message{
+        created_at = text_or_default(Node, ["/direct_message/created_at/text()"], ""),
+        id = text_or_default(Node, ["/direct_message/id/text()"], ""),
+        text = text_or_default(Node, ["/direct_message/text/text()"], ""),
+        sender_id = text_or_default(Node, ["/direct_message/sender_id/text()"], ""),
+        recipient_id = text_or_default(Node, ["/direct_message/recipient_id/text()"], ""),
+        sender_screen_name = text_or_default(Node, ["/direct_message/sender_screen_name/text()"], ""),
+        recipient_screen_name = text_or_default(Node, ["/direct_message/recipient_screen_name/text()"], "")
+    },
+    WithSender = case xmerl_xpath:string("/direct_message/sender", Node) of
+        [] -> DirectMessage;
+        [UserNode] -> DirectMessage#direct_message{ sender = parse_user(UserNode) }
+    end,
+    case xmerl_xpath:string("/direct_message/recipient", Node) of
+        [] -> WithSender;
+        [UserNode2] -> WithSender#direct_message{ recipient = parse_user(UserNode2) }
+    end;
     
+
+%% @private
+parse_direct_message(Body) when is_list(Body) ->
+    case (catch xmerl_scan:string(Body, [{quiet, true}])) of
+        {'EXIT', _} -> {error, Body};
+        {error, _} -> {error, Body};
+        Result ->
+            {Xml, _Rest} = Result,
+            [parse_direct_message(Node) || Node <- xmerl_xpath:string("/direct_message", Xml)]
+    end.
+
+
 %% @private
 parse_status(Node) when is_tuple(Node) ->
     Status = #status{
-        created_at = text_or_default(Node, ["/status/created_at/text()", "/direct_message/created_at/text()"], ""),
-        id = text_or_default(Node, ["/status/id/text()", "/direct_message/id/text()"], ""),
-        text = text_or_default(Node, ["/status/text/text()", "/direct_message/text/text()"], ""),
-        source = text_or_default(Node, ["/status/source/text()", "/direct_message/source/text()"], ""),
-        truncated = text_or_default(Node, ["/status/truncated/text()", "/direct_message/truncated/text()"], ""),
-        in_reply_to_status_id = text_or_default(Node, ["/status/in_reply_to_status_id/text()", "/direct_message/in_reply_to_status_id/text()"], ""),
-        in_reply_to_user_id = text_or_default(Node, ["/status/in_reply_to_user_id/text()", "/direct_message/in_reply_to_user_id/text()"], ""),
-        favorited = text_or_default(Node, ["/status/favorited/text()", "/direct_message/favorited/text()"], "")
+        created_at = text_or_default(Node, ["/status/created_at/text()"], ""),
+        id = text_or_default(Node, ["/status/id/text()"], ""),
+        text = text_or_default(Node, ["/status/text/text()"], ""),
+        source = text_or_default(Node, ["/status/source/text()"], ""),
+        truncated = text_or_default(Node, ["/status/truncated/text()"], ""),
+        in_reply_to_status_id = text_or_default(Node, ["/status/in_reply_to_status_id/text()"], ""),
+        in_reply_to_user_id = text_or_default(Node, ["/status/in_reply_to_user_id/text()"], ""),
+        favorited = text_or_default(Node, ["/status/favorited/text()"], "")
     },
-    case xmerl_xpath:string("/status/user|/direct_message/sender", Node) of
+    case xmerl_xpath:string("/status/user", Node) of
         [] -> Status;
         [UserNode] -> Status#status{ user = parse_user(UserNode) }
     end;
@@ -988,28 +1032,28 @@ parse_users(Body) ->
 %% @private
 parse_user(Node) when is_tuple(Node) ->
     UserRec = #user{
-        id = text_or_default(Node, ["/user/id/text()", "/sender/id/text()"], ""),
-        name = text_or_default(Node, ["/user/name/text()", "/sender/name/text()"], ""),
-        screen_name = text_or_default(Node, ["/user/screen_name/text()", "/sender/screen_name/text()"], ""),
-        location = text_or_default(Node, ["/user/location/text()", "/sender/location/text()"], ""),
-        description = text_or_default(Node, ["/user/description/text()", "/sender/description/text()"], ""),
-        profile_image_url = text_or_default(Node, ["/user/profile_image_url/text()", "/sender/profile_image_url/text()"], ""),
-        url = text_or_default(Node, ["/user/url/text()", "/sender/url/text()"], ""),
-        protected = text_or_default(Node, ["/user/protected/text()", "/sender/protected/text()"], ""),
-        followers_count = text_or_default(Node, ["/user/followers_count/text()", "/sender/followers_count/text()"], ""),
-        profile_background_color = text_or_default(Node, ["/user/profile_background_color/text()"], ""),
-        profile_text_color = text_or_default(Node, ["/user/profile_text_color/text()"], ""),
-        profile_link_color = text_or_default(Node, ["/user/profile_link_color/text()"], ""),
-        profile_sidebar_fill_color = text_or_default(Node, ["/user/profile_sidebar_fill_color/text()"], ""),
-        profile_sidebar_border_color = text_or_default(Node, ["/user/profile_sidebar_border_color/text()"], ""),
-        friends_count = text_or_default(Node, ["/user/friends_count/text()"], ""),
-        created_at = text_or_default(Node, ["/user/created_at/text()"], ""),
-        favourites_count = text_or_default(Node, ["/user/favourites_count/text()"], ""),
-        utc_offset = text_or_default(Node, ["/user/utc_offset/text()"], ""),
-        time_zone = text_or_default(Node, ["/user/time_zone/text()"], ""),
-        following = text_or_default(Node, ["/user/following/text()"], ""),
-        notifications = text_or_default(Node, ["/user/notifications/text()"], ""),
-        statuses_count = text_or_default(Node, ["/user/statuses_count/text()"], "")
+        id = text_or_default(Node, ["/user/id/text()", "/sender/id/text()", "/recipient/id/text()"], ""),
+        name = text_or_default(Node, ["/user/name/text()", "/sender/name/text()", "/recipient/name/text()"], ""),
+        screen_name = text_or_default(Node, ["/user/screen_name/text()", "/sender/screen_name/text()", "/recipient/screen_name/text()"], ""),
+        location = text_or_default(Node, ["/user/location/text()", "/sender/location/text()", "/recipient/location/text()"], ""),
+        description = text_or_default(Node, ["/user/description/text()", "/sender/description/text()", "/recipient/description/text()"], ""),
+        profile_image_url = text_or_default(Node, ["/user/profile_image_url/text()", "/sender/profile_image_url/text()", "/recipient/profile_image_url/text()"], ""),
+        url = text_or_default(Node, ["/user/url/text()", "/sender/url/text()", "/recipient/url/text()"], ""),
+        protected = text_or_default(Node, ["/user/protected/text()", "/sender/protected/text()", "/recipient/protected/text()"], ""),
+        followers_count = text_or_default(Node, ["/user/followers_count/text()", "/sender/followers_count/text()", "/recipient/followers_count/text()"], ""),
+        profile_background_color = text_or_default(Node, ["/user/profile_background_color/text()", "/sender/profile_background_color/text()", "/recipient/profile_background_color/text()"], ""),
+        profile_text_color = text_or_default(Node, ["/user/profile_text_color/text()", "/sender/profile_text_color/text()", "/recipient/profile_text_color/text()"], ""),
+        profile_link_color = text_or_default(Node, ["/user/profile_link_color/text()", "/sender/profile_link_color/text()", "/recipient/profile_link_color/text()"], ""),
+        profile_sidebar_fill_color = text_or_default(Node, ["/user/profile_sidebar_fill_color/text()", "/sender/profile_sidebar_fill_color/text()", "/recipient/profile_siderbar_fill_color/text()"], ""),
+        profile_sidebar_border_color = text_or_default(Node, ["/user/profile_sidebar_border_color/text()", "/sender/profile_sidebar_border_color/text()", "/recipient/profile_sidebar_border_color/text()"], ""),
+        friends_count = text_or_default(Node, ["/user/friends_count/text()", "/sender/friends_count/text()", "/recipient/friends_count/text()"], ""),
+        created_at = text_or_default(Node, ["/user/created_at/text()", "/sender/created_at/text()", "/recipient/created_at/text()"], ""),
+        favourites_count = text_or_default(Node, ["/user/favourites_count/text()", "/sender/favourites_count/text()", "/recipient/favourites_count/text()"], ""),
+        utc_offset = text_or_default(Node, ["/user/utc_offset/text()", "/sender/utc_offset/text()", "/recipient/utc_offset/text()"], ""),
+        time_zone = text_or_default(Node, ["/user/time_zone/text()", "/sender/time_zone/text()", "/recipient/time_zone/text()"], ""),
+        following = text_or_default(Node, ["/user/following/text()", "/sender/following/text()", "/recipient/following/text()"], ""),
+        notifications = text_or_default(Node, ["/user/notifications/text()", "/sender/notifications/text()", "/recipient/notifications/text()"], ""),
+        statuses_count = text_or_default(Node, ["/user/statuses_count/text()", "/sender/statuses_count/text()", "/recipient/statuses_count/text()"], "")
     },
     case xmerl_xpath:string("/user/status", Node) of
         [] -> UserRec;
